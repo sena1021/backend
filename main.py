@@ -7,30 +7,23 @@ from fastapi.responses import JSONResponse
 import io
 import os
 from fastapi.middleware.cors import CORSMiddleware # CORSミドルウェアをインポート
+import warnings
+
+# PyTorch 2.6のweights_only=Trueに関する警告を抑制
+warnings.filterwarnings("ignore", category=UserWarning, module='torch.serialization')
 
 app = FastAPI()
 
-# CORS設定を更新
-# Flutter Webアプリが現在実行されているオリジンを含める
-origins = [
-    "http://localhost",
-    "http://localhost:8000", # FastAPIサーバー自身のオリジン
-    "http://localhost:5000", # Flutter Webのデフォルト開発ポート (一般的なポート)
-    "http://127.0.0.1:5000", # Flutter Webのデフォルト開発ポート (一般的なポート)
-    "http://localhost:61866", # 以前のFlutter Webアプリのポート
-    "http://127.0.0.1:61866", # 以前のFlutter Webアプリのポート
-    "http://localhost:64452", # ★追加: Flutter Webアプリが現在使用しているポート
-    "http://127.0.0.1:64452", # ★追加: Flutter Webアプリが現在使用しているポート
-    # Flutter Webアプリがデプロイされている実際のドメインを追加する必要があるかもしれません
-    # 例: "https://your-flutter-web-app.com"
-]
-
+# CORS設定を更新: すべてのlocalhostオリジンを許可するように変更
+# 注意: allow_credentials=True の場合、allow_origins=["*"] は使用できません。
+# 開発目的で全てのlocalhostからのアクセスを許可するために、allow_credentials を False に設定します。
+# 本番環境では、具体的なオリジンを指定することを強く推奨します。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # 許可するオリジンのリスト
-    allow_credentials=True, # クッキーやHTTP認証情報を含めることを許可
-    allow_methods=["*"], # すべてのHTTPメソッドを許可 (GET, POSTなど)
-    allow_headers=["*"], # すべてのHTTPヘッダーを許可
+    allow_origins=["*"],  # すべてのオリジンからのアクセスを許可
+    allow_credentials=False, # ★変更: allow_origins=["*"] と併用するため False に設定
+    allow_methods=["*"],  # すべてのHTTPメソッドを許可 (GET, POSTなど)
+    allow_headers=["*"],  # すべてのHTTPヘッダーを許可
 )
 
 
@@ -314,11 +307,6 @@ async def predict_grape(file: UploadFile = File(...)):
             130: "Watermelon"
         }
 
-        # 最も高い確率を持つクラスのインデックスを取得
-        predicted_class_idx = torch.argmax(probabilities).item()
-        confidence = probabilities[predicted_class_idx].item()
-
-        # 予測されたインデックスがclass_labelsの範囲内にあるか確認
         if predicted_class_idx in class_labels:
             identified_plant = class_labels[predicted_class_idx]
         else:
@@ -327,14 +315,13 @@ async def predict_grape(file: UploadFile = File(...)):
         return {
             "filename": file.filename,
             "identified_plant": identified_plant,
-            "confidence": round(confidence, 4), # 信頼度を小数点以下4桁に丸める
+            "confidence": round(confidence, 4),
             "message": "機械学習モデルによる判定結果です。"
         }
 
     except Exception as e:
-        # ファイル処理中またはモデル推論中にエラーが発生した場合のハンドリング
-        print(f"ERROR: 画像処理またはモデル推論エラー: {str(e)}") # サーバーログにエラーを出力
+        print(f"ERROR: 画像処理またはモデル推論エラー: {str(e)}")
         return JSONResponse(
-            status_code=500, # Internal Server Error
+            status_code=500,
             content={"error": f"ファイル処理またはモデル推論エラー: {str(e)}"}
         )
