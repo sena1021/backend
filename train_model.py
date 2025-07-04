@@ -20,7 +20,7 @@ MODEL_SAVE_PATH = 'models/grape_classifier.pt' # 学習済みモデルの保存�
 CLASS_NAMES_SAVE_PATH = 'models/class_names.json' # クラス名リストの保存パス
 
 # GPUが利用可能か確認 (ローカルPCにGPUがない場合は自動的にCPUが選択されます)
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0")
 print(f"INFO: 使用デバイス: {device}")
 
 # 2. データの前処理とデータ拡張を定義
