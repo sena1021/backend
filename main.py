@@ -8,6 +8,7 @@ import io
 import os
 from fastapi.middleware.cors import CORSMiddleware # CORSミドルウェアをインポート
 import warnings
+import json # class_names.json の読み込みに必要
 
 # PyTorch 2.6のweights_only=Trueに関する警告を抑制
 warnings.filterwarnings("ignore", category=UserWarning, module='torch.serialization')
@@ -30,6 +31,8 @@ app.add_middleware(
 # モデルのパス
 # SyntaxErrorを避けるため、raw string (r"...") を使用してパスを定義します。
 MODEL_PATH = r"C:\Users\student\back\backend\models\grape_classifier.pt"
+# クラス名リストのパス
+CLASS_NAMES_LOAD_PATH = r"C:\Users\student\back\backend\models\class_names.json"
 
 # --- モデルのアーキテクチャ定義 ---
 # ★★重要★★: ここに定義するGrapeClassifierクラスは、
@@ -78,7 +81,19 @@ class GrapeClassifier(nn.Module):
 # モデルのロード (アプリケーション起動時に一度だけロードする)
 # グローバル変数としてモデルをロードすることで、リクエストごとにロードするオーバーヘッドを避けます。
 model = None
+class_labels_list = [] # クラス名を格納するリスト
+
 try:
+    # クラス名リストをJSONファイルからロード
+    if os.path.exists(CLASS_NAMES_LOAD_PATH):
+        with open(CLASS_NAMES_LOAD_PATH, 'r', encoding='utf-8') as f:
+            class_labels_list = json.load(f)
+        print(f"INFO: クラス名が '{CLASS_NAMES_LOAD_PATH}' から正常にロードされました。クラス数: {len(class_labels_list)}")
+    else:
+        print(f"WARNING: クラス名ファイル '{CLASS_NAMES_LOAD_PATH}' が見つかりません。")
+        # フォールバックは不要なため、class_labels_list は空のままになります。
+        # これにより、モデルがロードされても、クラス名が解決できない場合は「不明な植物 (インデックス範囲外)」が返されます。
+
     if os.path.exists(MODEL_PATH):
         # torch.loadが直接モデルインスタンスを返すことを想定し、
         # weights_only=False を指定してロードします。
@@ -91,16 +106,20 @@ try:
         print(f"INFO: モデル '{MODEL_PATH}' を正常にロードしました。")
 
         # ★★デバッグのヒント★★: ロードされたモデルの最終出力層のサイズを確認
-        # これがclass_labelsの数と一致することを確認してください。
+        # これがclass_labels_listの数と一致することを確認してください。
         # 例: モデルがnn.Sequentialの最後の層がnn.Linearの場合
-        if isinstance(model, nn.Module) and hasattr(model, 'fc') and isinstance(model.fc, nn.Linear):
-            if model.fc.out_features != 131:
-                print(f"WARNING: ロードされたモデルの出力クラス数 ({model.fc.out_features}) が、期待されるクラス数 (131) と一致しません。")
-        elif isinstance(model, nn.Module) and hasattr(model, 'features') and isinstance(model.features[-1], nn.Linear):
-            if model.features[-1].out_features != 131:
-                print(f"WARNING: ロードされたモデルの出力クラス数 ({model.features[-1].out_features}) が、期待されるクラス数 (131) と一致しません。")
+        expected_num_classes = len(class_labels_list) if class_labels_list else 0
+        if expected_num_classes > 0: # クラス名がロードされている場合のみ検証
+            if isinstance(model, nn.Module) and hasattr(model, 'fc') and isinstance(model.fc, nn.Linear):
+                if model.fc.out_features != expected_num_classes:
+                    print(f"WARNING: ロードされたモデルの出力クラス数 ({model.fc.out_features}) が、期待されるクラス数 ({expected_num_classes}) と一致しません。")
+            elif isinstance(model, nn.Module) and hasattr(model, 'features') and isinstance(model.features[-1], nn.Linear):
+                if model.features[-1].out_features != expected_num_classes:
+                    print(f"WARNING: ロードされたモデルの出力クラス数 ({model.features[-1].out_features}) が、期待されるクラス数 ({expected_num_classes}) と一致しません。")
+            else:
+                print("WARNING: モデルの出力層のクラス数を自動的に検証できませんでした。手動で確認してください。")
         else:
-            print("WARNING: モデルの出力層のクラス数を自動的に検証できませんでした。手動で確認してください。")
+            print("WARNING: クラス名がロードされていないため、モデルの出力層のクラス数を検証できませんでした。")
 
     else:
         print(f"WARNING: モデルファイル '{MODEL_PATH}' が見つかりません。ダミー応答モードで動作します。")
@@ -147,6 +166,18 @@ async def predict_grape(file: UploadFile = File(...)):
             }
         )
 
+    # クラス名がロードされていない場合は判定不可とする
+    if not class_labels_list:
+        return JSONResponse(
+            status_code=500, # Internal Server Error
+            content={
+                "filename": file.filename,
+                "identified_plant": "判定不可",
+                "confidence": 0.0,
+                "message": "クラス名リストがロードされていません。システム管理者に連絡してください。"
+            }
+        )
+
     try:
         # ファイルの内容を非同期で読み込む
         contents = await file.read()
@@ -170,158 +201,24 @@ async def predict_grape(file: UploadFile = File(...)):
         predicted_class_idx = torch.argmax(probabilities).item()
         confidence = probabilities[predicted_class_idx].item()
 
-        # クラスラベルのマッピング (モデルの出力インデックスと一致させる必要があります)
-        # ★★重要★★: このリストの順序は、モデルが訓練された際のクラスインデックスの順序と完全に一致する必要があります。
-        # 提供された131クラスのリストを基に作成
-        class_labels = {
-            0: "Apple Braeburn",
-            1: "Apple Crimson Snow",
-            2: "Apple Golden 1",
-            3: "Apple Golden 2",
-            4: "Apple Golden 3",
-            5: "Apple Granny Smith",
-            6: "Apple Pink Lady",
-            7: "Apple Red 1",
-            8: "Apple Red 2",
-            9: "Apple Red 3",
-            10: "Apple Red Delicious",
-            11: "Apple Red Yellow 1",
-            12: "Apple Red Yellow 2",
-            13: "Apricot",
-            14: "Avocado",
-            15: "Avocado ripe",
-            16: "Banana",
-            17: "Banana Lady Finger",
-            18: "Banana Red",
-            19: "Beetroot",
-            20: "Blueberry",
-            21: "Cactus fruit",
-            22: "Cantaloupe 1",
-            23: "Cantaloupe 2",
-            24: "Carambula",
-            25: "Cauliflower",
-            26: "Cherry 1",
-            27: "Cherry 2",
-            28: "Cherry Rainier",
-            29: "Cherry Wax Black",
-            30: "Cherry Wax Red",
-            31: "Cherry Wax Yellow",
-            32: "Chestnut",
-            33: "Clementine",
-            34: "Cocos",
-            35: "Corn",
-            36: "Corn Husk",
-            37: "Cucumber Ripe",
-            38: "Cucumber Ripe 2",
-            39: "Dates",
-            40: "Eggplant",
-            41: "Fig",
-            42: "Ginger Root",
-            43: "Granadilla",
-            44: "Grape Blue",
-            45: "Grape Pink",
-            46: "Grape White",
-            47: "Grape White 2",
-            48: "Grape White 3",
-            49: "Grape White 4",
-            50: "Grapefruit Pink",
-            51: "Grapefruit White",
-            52: "Guava",
-            53: "Hazelnut",
-            54: "Huckleberry",
-            55: "Kaki",
-            56: "Kiwi",
-            57: "Kohlrabi",
-            58: "Kumquats",
-            59: "Lemon",
-            60: "Lemon Meyer",
-            61: "Limes",
-            62: "Lychee",
-            63: "Mandarine",
-            64: "Mango",
-            65: "Mango Red",
-            66: "Mangostan",
-            67: "Maracuja",
-            68: "Melon Piel de Sapo",
-            69: "Mulberry",
-            70: "Nectarine",
-            71: "Nectarine Flat",
-            72: "Nut Forest",
-            73: "Nut Pecan",
-            74: "Onion Red",
-            75: "Onion Red Peeled",
-            76: "Onion White",
-            77: "Orange",
-            78: "Papaya",
-            79: "Passion Fruit",
-            80: "Peach",
-            81: "Peach 2",
-            82: "Peach Flat",
-            83: "Pear",
-            84: "Pear 2",
-            85: "Pear Abate",
-            86: "Pear Forelle",
-            87: "Pear Kaiser",
-            88: "Pear Monster",
-            89: "Pear Red",
-            90: "Pear Stone",
-            91: "Pear Williams",
-            92: "Pepino",
-            93: "Pepper Green",
-            94: "Pepper Orange",
-            95: "Pepper Red",
-            96: "Pepper Yellow",
-            97: "Physalis",
-            98: "Physalis with Husk",
-            99: "Pineapple",
-            100: "Pineapple Mini",
-            101: "Pitahaya Red",
-            102: "Plum",
-            103: "Plum 2",
-            104: "Plum 3",
-            105: "Pomegranate",
-            106: "Pomelo Sweetie",
-            107: "Potato Red",
-            108: "Potato Red Washed",
-            109: "Potato Sweet",
-            110: "Potato White",
-            111: "Quince",
-            112: "Rambutan",
-            113: "Raspberry",
-            114: "Redcurrant",
-            115: "Salak",
-            116: "Strawberry",
-            117: "Strawberry Wedge",
-            118: "Tamarillo",
-            119: "Tangelo",
-            120: "Tomato 1",
-            121: "Tomato 2",
-            122: "Tomato 3",
-            123: "Tomato 4",
-            124: "Tomato Cherry Red",
-            125: "Tomato Heart",
-            126: "Tomato Maroon",
-            127: "Tomato Yellow",
-            128: "Tomato not Ripened",
-            129: "Walnut",
-            130: "Watermelon"
-        }
-
-        if predicted_class_idx in class_labels:
-            identified_plant = class_labels[predicted_class_idx]
+        # クラスラベルのマッピング (class_labels_listから参照)
+        # 予測されたインデックスがclass_labels_listの範囲内にあるか確認
+        if 0 <= predicted_class_idx < len(class_labels_list):
+            identified_plant = class_labels_list[predicted_class_idx]
         else:
             identified_plant = "不明な植物 (インデックス範囲外)"
 
         return {
             "filename": file.filename,
             "identified_plant": identified_plant,
-            "confidence": round(confidence, 4),
+            "confidence": round(confidence, 4), # 信頼度を小数点以下4桁に丸める
             "message": "機械学習モデルによる判定結果です。"
         }
 
     except Exception as e:
-        print(f"ERROR: 画像処理またはモデル推論エラー: {str(e)}")
+        # ファイル処理中またはモデル推論中にエラーが発生した場合のハンドリング
+        print(f"ERROR: 画像処理またはモデル推論エラー: {str(e)}") # サーバーログにエラーを出力
         return JSONResponse(
-            status_code=500,
+            status_code=500, # Internal Server Error
             content={"error": f"ファイル処理またはモデル推論エラー: {str(e)}"}
         )
