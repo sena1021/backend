@@ -8,14 +8,18 @@ import time
 import copy
 import json # class_names.json の保存に必要
 import warnings
+import kagglehub
 
 # PyTorch 2.6のweights_only=Trueに関する警告を抑制
 warnings.filterwarnings("ignore", category=UserWarning, module='torch.serialization')
 
+# Download latest version
+path = kagglehub.dataset_download("misrakahmed/vegetable-image-dataset")
+
 # 1. データセットのパスを設定
 # あなたのローカルPC上のデータセットのルートパスを設定してください。
 # C:/Users/student/flu/Fruit-Images-Dataset とのことですので、このパスに設定します。
-DATA_DIR = r"C:\Users\cyber\Downloads\Fruit-Images-Dataset-master\Fruit-Images-Dataset-master"
+DATA_DIR = path.join(path, 'Fruit-Images-Dataset') # Kaggle Hubからダウンロードしたデータセットのパス
 MODEL_SAVE_PATH = 'models/grape_classifier.pt' # 学習済みモデルの保存パス
 CLASS_NAMES_SAVE_PATH = 'models/class_names.json' # クラス名リストの保存パス
 
